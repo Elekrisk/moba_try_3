@@ -1,57 +1,25 @@
+mod connect_to_server;
+mod connecting_to_server;
+mod main_menu;
 mod network;
 
-use std::{
-    marker::ConstParamTy,
-    net::{SocketAddr, TcpStream},
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
-};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
-use bevy::{app::AppExit, ecs::system::RunSystemOnce, prelude::*, utils::HashMap};
-use common::network::TcpStreamExt;
+use bevy::{app::AppExit, prelude::*};
 
-use crate::ui::{
-    view::{self, ButtonAction},
-    UiRoot, UiRootComponent, View,
-};
+use crate::DEBUG;
 
-use self::network::{
-    JoinedLobby, LeftLobby, ServerConnectionStatus, UpdateLobbyInfo, UpdateLobbyList,
+use self::{
+    connect_to_server::{ConnectToServer, InConnectToServerPlugin},
+    connecting_to_server::InConnectingToServerPlugin,
+    main_menu::MainMenuPlugin,
+    network::{
+        JoinedLobby, LeftLobby, PlayerJoinedLobby, PlayerLeftLobby, Request,
+        ServerConnectionStatus, UpdateLobbyInfo, UpdateLobbyList,
+    },
 };
 
 pub struct NonGame {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
-enum MenuId {
-    ConnectToServer,
-    ConnectingToServer,
-    ConnectionToServerFailed,
-    Main,
-    LobbyList,
-    InLobby,
-}
-
-#[derive(Resource, Clone, Default)]
-struct MenuEntities {
-    active_menu: Option<MenuId>,
-    entities: HashMap<MenuId, Entity>,
-}
-
-impl MenuEntities {
-    fn new() -> Self {
-        Self {
-            active_menu: None,
-            entities: HashMap::new(),
-        }
-    }
-
-    fn get(&self, id: MenuId) -> Entity {
-        *self.entities.get(&id).unwrap()
-    }
-
-    fn set(&mut self, id: MenuId, entity: Entity) {
-        self.entities.insert(id, entity);
-    }
-}
 
 #[derive(Resource, Default)]
 struct RequestChannel {
@@ -69,109 +37,46 @@ impl Plugin for NonGame {
             .add_event::<ServerConnectionStatus>()
             .add_event::<UpdateLobbyList>()
             .add_event::<UpdateLobbyInfo>()
+            .add_event::<PlayerJoinedLobby>()
+            .add_event::<PlayerLeftLobby>()
             .add_event::<JoinedLobby>()
-            .add_event::<LeftLobby>()
-            .add_event::<ConnectToServer>();
+            .add_event::<LeftLobby>();
 
         app.init_non_send_resource::<EventChannel>()
             .init_resource::<RequestChannel>();
 
-        app.add_systems(Update, event_channel_listener);
+        app.add_systems(Update, (event_channel_listener, request_channel_listener));
 
-        app.add_systems(
-            Update,
-            (
-                connect_to_server_system.run_if(in_state(NonGameState::ConnectToServer)),
-                connected_to_server.run_if(in_state(NonGameState::ConnectingToServer)),
-                joined_lobby.run_if(in_state(NonGameState::LobbyMenu)),
-                left_lobby.run_if(in_state(NonGameState::InLobby)),
-            ),
-        );
-
-        app.add_systems(Startup, |mut commands: Commands| {
-            commands.spawn(UiRootComponent(Box::new(UiRoot::new(
-                0,
-                connect_to_server_menu,
-            ))));
-        });
-
-        app.insert_state(NonGameState::ConnectToServer);
+        app.insert_state(ConnectingState::NotConnected);
 
         app.add_systems(Startup, |mut commands: Commands| {
             commands.spawn(Camera3dBundle { ..default() });
         });
-    }
-}
 
-fn connect_to_server_system(
-    mut events: EventReader<ConnectToServer>,
-    mut next_state: ResMut<NextState<NonGameState>>,
-    mut event_channel: NonSendMut<EventChannel>,
-    mut request_channel: ResMut<RequestChannel>,
-) {
-    let events = events.read().collect::<Vec<_>>();
-    let &ConnectToServer(addr) = match &events[..] {
-        [] => return,
-        [event] => *event,
-        _ => panic!("Missed connection events"),
-    };
-
-    let (send_event, recv_event) = mpsc::channel();
-    let (send_request, recv_request) = mpsc::channel();
-
-    next_state.set(NonGameState::ConnectingToServer);
-
-    event_channel.channel = Some(recv_event);
-    request_channel.channel = Some(send_request);
-
-    std::thread::spawn(move || network::connect_to_server(addr, send_event, recv_request));
-}
-
-fn connected_to_server(
-    mut reader: EventReader<ServerConnectionStatus>,
-    mut next_state: ResMut<NextState<NonGameState>>,
-) {
-    for event in reader.read() {
-        match event {
-            ServerConnectionStatus::Connected => next_state.set(NonGameState::MainMenu),
-            ServerConnectionStatus::ConnectionFailed => {
-                next_state.set(NonGameState::ConnectToServer)
-            }
-        }
-    }
-}
-
-fn joined_lobby(
-    mut reader: EventReader<JoinedLobby>,
-    mut next_state: ResMut<NextState<NonGameState>>,
-) {
-    for event in reader.read() {
-        next_state.set(NonGameState::InLobby);
-    }
-}
-
-fn left_lobby(mut reader: EventReader<LeftLobby>, mut next_state: ResMut<NextState<NonGameState>>) {
-    for event in reader.read() {
-        next_state.set(NonGameState::LobbyMenu);
+        app.add_plugins((
+            InConnectToServerPlugin,
+            InConnectingToServerPlugin,
+            MainMenuPlugin,
+        ));
     }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, States)]
-pub enum NonGameState {
-    ConnectToServer,
-    ConnectingToServer,
-    ConnectionToServerFailed,
-    MainMenu,
-    LobbyMenu,
-    Matchmaking,
-    InLobby,
+pub enum ConnectingState {
+    NotConnected,
+    Connecting,
+    ConnectionFailed,
+    Connected,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn event_channel_listener(
     event_channel: NonSend<EventChannel>,
     mut connected_to_server: EventWriter<ServerConnectionStatus>,
     mut update_lobby_list: EventWriter<UpdateLobbyList>,
     mut update_lobby_info: EventWriter<UpdateLobbyInfo>,
+    mut player_joined_lobby: EventWriter<PlayerJoinedLobby>,
+    mut player_left_lobby: EventWriter<PlayerLeftLobby>,
     mut joined_lobby: EventWriter<JoinedLobby>,
     mut left_lobby: EventWriter<LeftLobby>,
 ) {
@@ -193,6 +98,12 @@ fn event_channel_listener(
         network::Event::UpdateLobbyInfo(event) => {
             update_lobby_info.send(event);
         }
+        network::Event::PlayerJoinedLobby(event) => {
+            player_joined_lobby.send(event);
+        }
+        network::Event::PlayerLeftLobby(event) => {
+            player_left_lobby.send(event);
+        }
         network::Event::JoinedLobby(event) => {
             joined_lobby.send(event);
         }
@@ -202,18 +113,32 @@ fn event_channel_listener(
     }
 }
 
-#[derive(Clone, Event)]
-pub struct ConnectToServer(SocketAddr);
+fn request_channel_listener(
+    mut events: EventReader<Request>,
+    request_channel: Res<RequestChannel>,
+) {
+    for event in events.read() {
+        request_channel
+            .channel
+            .as_ref()
+            .unwrap()
+            .send(event.clone())
+            .unwrap();
+    }
+}
 
-fn connect_to_server_menu(state: &mut i32) -> impl View<i32> {
-    view::Stack::new(FlexDirection::Column)
-        .with_child(
-            view::Button::new("Increase")
-                .with_action(ButtonAction::ModifyState(Box::new(|s| *s += 1))),
-        )
-        .with_child(view::Label::new(*state))
-        .with_child(
-            view::Button::new("Decrease")
-                .with_action(ButtonAction::ModifyState(Box::new(|s| *s -= 1))),
-        )
+#[derive(Component)]
+struct Menu;
+
+fn destroy_menu(mut commands: Commands) {
+    commands.add(|w: &mut World| {
+        let Ok(e) = w.query_filtered::<Entity, With<Menu>>().get_single(w) else {
+            return;
+        };
+        w.entity_mut(e).despawn_recursive();
+    });
+}
+
+fn quit(mut e: EventWriter<AppExit>) {
+    e.send(AppExit);
 }

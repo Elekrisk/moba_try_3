@@ -1,19 +1,14 @@
 use proc_macro2::TokenStream;
 use syn::{parse::Parse, Ident};
 
-
 pub struct Widget {
     name: Ident,
-    props: Props
+    props: Props,
 }
 
-pub struct Props {
+pub struct Props {}
 
-}
-
-pub enum Prop {
-    
-}
+pub enum Prop {}
 
 impl Parse for Props {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
@@ -28,10 +23,7 @@ impl Parse for Widget {
         syn::bracketed!(content in input);
         let props = content.parse()?;
 
-        Ok(Widget {
-            name,
-            props
-        })
+        Ok(Widget { name, props })
     }
 }
 

@@ -1484,6 +1484,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "bevy",
+ "bevy_eventlistener",
  "bevy_framepace",
  "bevy_mod_picking",
  "common",
@@ -1558,8 +1559,10 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bevy",
  "postcard",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
@@ -2585,6 +2588,7 @@ checksum = "01cda141df6706de531b6c46c3a33ecca755538219bd484262fa09410c13539c"
 name = "lobby-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "common",
  "uuid",

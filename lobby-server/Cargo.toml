@@ -7,3 +7,4 @@ edition = "2021"
 bevy = "0.13"
 common = { path = "../common" }
 uuid = "1"
+anyhow = "1"
